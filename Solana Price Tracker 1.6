@@ -39,6 +39,7 @@ float priceChange24h = 0;
 float priceHistory[24];
 bool dataLoaded = false;
 unsigned long lastUpdate = 0;
+int loadingSpinner = 0;
 
 // Function prototypes
 void connectToWiFi();
@@ -49,11 +50,16 @@ void drawPriceGraph();
 void updatePriceData();
 void loadHistoricalData();
 void drawPriceScreen();
+void showLoadingScreen(const char* message);
 
 void setup() {
+  Serial.begin(115200);
   M5.begin();
   M5.Lcd.setRotation(1);
   M5.Lcd.setTextSize(2);
+  
+  Serial.println("Initializing device...");
+  showLoadingScreen("Starting up");
   connectToWiFi();
   showMenu();
 }
@@ -63,6 +69,7 @@ void loop() {
   
   if(dataLoaded) {
     if(millis() - lastUpdate > 30000) {
+      Serial.println("Auto-updating price data...");
       updatePriceData();
       lastUpdate = millis();
     }
@@ -74,20 +81,34 @@ void loop() {
   delay(100);
 }
 
-void connectToWiFi() {
-  WiFi.begin("Nino's-Wlan", "Nino2103");
+void showLoadingScreen(const char* message) {
   M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(10, 10);
-  M5.Lcd.print("Connecting...");
+  M5.Lcd.setTextColor(WHITE);
+  M5.Lcd.setCursor(10, 50);
+  M5.Lcd.print(message);
+  M5.Lcd.setCursor(145, 50);
+  M5.Lcd.print("|/-\\"[loadingSpinner % 4]);
+  loadingSpinner++;
+  
+  Serial.print("Loading: ");
+  Serial.println(message);
+}
+
+void connectToWiFi() {
+  Serial.println("Initializing WiFi connection...");
+  showLoadingScreen("Connecting WiFi");
+  WiFi.begin("Nino's-Wlan", "Nino2103");
   
   while(WiFi.status() != WL_CONNECTED) {
+    showLoadingScreen("Connecting WiFi");
     delay(500);
-    M5.Lcd.print(".");
+    Serial.print(".");
   }
-  M5.Lcd.fillScreen(BLACK);
+  Serial.println("\nWiFi connected!");
 }
 
 void showMenu() {
+  Serial.println("Showing menu screen");
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextSize(3);
   M5.Lcd.setTextColor(cryptoList[selectedCryptoIndex].color);
@@ -102,11 +123,14 @@ void showMenu() {
 
 void handleMenuInput() {
   if(M5.BtnA.wasPressed()) {
+    Serial.println("Button A pressed - Next coin");
     selectedCryptoIndex = (selectedCryptoIndex + 1) % NUM_CRYPTO;
     showMenu();
   }
   if(M5.BtnB.wasPressed()) {
+    Serial.println("Button B pressed - Loading data");
     dataLoaded = true;
+    showLoadingScreen("Fetching Data");
     updatePriceData();
     loadHistoricalData();
     lastUpdate = millis();
@@ -114,6 +138,7 @@ void handleMenuInput() {
 }
 
 void updatePriceData() {
+  Serial.println("Updating price data from API...");
   HTTPClient http;
   String url = "https://api.coingecko.com/api/v3/simple/price?ids=";
   url += cryptoList[selectedCryptoIndex].id;
@@ -122,16 +147,26 @@ void updatePriceData() {
   http.begin(url);
   if(http.GET() == HTTP_CODE_OK) {
     String payload = http.getString();
+    Serial.println("Price data received:");
+    Serial.println(payload);
+    
     DynamicJsonDocument doc(512);
     deserializeJson(doc, payload);
     
     currentPrice = doc[cryptoList[selectedCryptoIndex].id]["usd"];
     priceChange24h = doc[cryptoList[selectedCryptoIndex].id]["usd_24h_change"];
+    
+    Serial.printf("New price: $%.2f\n", currentPrice);
+    Serial.printf("24h change: %.2f%%\n", priceChange24h);
+  } else {
+    Serial.println("Error fetching price data!");
   }
   http.end();
 }
 
 void loadHistoricalData() {
+  Serial.println("Loading historical data...");
+  showLoadingScreen("Loading History");
   HTTPClient http;
   String url = "https://api.coingecko.com/api/v3/coins/";
   url += cryptoList[selectedCryptoIndex].id;
@@ -140,6 +175,8 @@ void loadHistoricalData() {
   http.begin(url);
   if(http.GET() == HTTP_CODE_OK) {
     String payload = http.getString();
+    Serial.println("Historical data received");
+    
     DynamicJsonDocument doc(4096);
     deserializeJson(doc, payload);
     
@@ -147,6 +184,9 @@ void loadHistoricalData() {
     for(int i=0; i<24; i++) {
       priceHistory[i] = prices[i*4][1];
     }
+    Serial.println("Historical data processed");
+  } else {
+    Serial.println("Error fetching historical data!");
   }
   http.end();
 }
@@ -154,6 +194,7 @@ void loadHistoricalData() {
 void drawPriceScreen() {
   static bool firstDraw = true;
   if(firstDraw) {
+    Serial.println("Drawing price screen");
     M5.Lcd.fillScreen(BLACK);
     M5.Lcd.setTextColor(WHITE);
     
@@ -206,6 +247,8 @@ void drawPriceGraph() {
 
 void checkForMenuButton() {
   if(M5.BtnA.wasPressed() || M5.BtnB.wasPressed()) {
+    Serial.println("Returning to menu");
+    showLoadingScreen("Returning to Menu");
     dataLoaded = false;
     showMenu();
   }
