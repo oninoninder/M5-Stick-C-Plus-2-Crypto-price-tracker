@@ -193,6 +193,8 @@ void loadHistoricalData() {
 
 void drawPriceScreen() {
   static bool firstDraw = true;
+  uint16_t priceColor = priceChange24h >= 0 ? GREEN : RED;
+  
   if(firstDraw) {
     Serial.println("Drawing price screen");
     M5.Lcd.fillScreen(BLACK);
@@ -208,11 +210,11 @@ void drawPriceScreen() {
     
     // Values line
     M5.Lcd.setCursor(10, 40);
-    M5.Lcd.setTextColor(cryptoList[selectedCryptoIndex].color);
+    M5.Lcd.setTextColor(priceColor);
     M5.Lcd.printf("$%.2f", currentPrice);
     
     M5.Lcd.setCursor(150, 40);
-    M5.Lcd.setTextColor(priceChange24h >= 0 ? GREEN : RED);
+    M5.Lcd.setTextColor(priceColor);
     M5.Lcd.printf("%.2f%%", priceChange24h);
 
     // Graph frame
