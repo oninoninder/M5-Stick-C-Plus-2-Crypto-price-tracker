@@ -89,26 +89,21 @@ void showLoadingScreen(const char* message) {
   M5.Lcd.setCursor(145, 50);
   M5.Lcd.print("|/-\\"[loadingSpinner % 4]);
   loadingSpinner++;
-  
-  Serial.print("Loading: ");
-  Serial.println(message);
 }
 
 void connectToWiFi() {
-  Serial.println("Initializing WiFi connection...");
-  showLoadingScreen("Connecting WiFi");
   WiFi.begin("Nino's-Wlan", "Nino2103");
+  showLoadingScreen("Connecting WiFi");
   
   while(WiFi.status() != WL_CONNECTED) {
     showLoadingScreen("Connecting WiFi");
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nWiFi connected!");
+  M5.Lcd.fillScreen(BLACK);
 }
 
 void showMenu() {
-  Serial.println("Showing menu screen");
   M5.Lcd.fillScreen(BLACK);
   M5.Lcd.setTextSize(3);
   M5.Lcd.setTextColor(cryptoList[selectedCryptoIndex].color);
@@ -123,12 +118,10 @@ void showMenu() {
 
 void handleMenuInput() {
   if(M5.BtnA.wasPressed()) {
-    Serial.println("Button A pressed - Next coin");
     selectedCryptoIndex = (selectedCryptoIndex + 1) % NUM_CRYPTO;
     showMenu();
   }
   if(M5.BtnB.wasPressed()) {
-    Serial.println("Button B pressed - Loading data");
     dataLoaded = true;
     showLoadingScreen("Fetching Data");
     updatePriceData();
@@ -138,7 +131,6 @@ void handleMenuInput() {
 }
 
 void updatePriceData() {
-  Serial.println("Updating price data from API...");
   HTTPClient http;
   String url = "https://api.coingecko.com/api/v3/simple/price?ids=";
   url += cryptoList[selectedCryptoIndex].id;
@@ -147,26 +139,16 @@ void updatePriceData() {
   http.begin(url);
   if(http.GET() == HTTP_CODE_OK) {
     String payload = http.getString();
-    Serial.println("Price data received:");
-    Serial.println(payload);
-    
     DynamicJsonDocument doc(512);
     deserializeJson(doc, payload);
     
     currentPrice = doc[cryptoList[selectedCryptoIndex].id]["usd"];
     priceChange24h = doc[cryptoList[selectedCryptoIndex].id]["usd_24h_change"];
-    
-    Serial.printf("New price: $%.2f\n", currentPrice);
-    Serial.printf("24h change: %.2f%%\n", priceChange24h);
-  } else {
-    Serial.println("Error fetching price data!");
   }
   http.end();
 }
 
 void loadHistoricalData() {
-  Serial.println("Loading historical data...");
-  showLoadingScreen("Loading History");
   HTTPClient http;
   String url = "https://api.coingecko.com/api/v3/coins/";
   url += cryptoList[selectedCryptoIndex].id;
@@ -175,8 +157,6 @@ void loadHistoricalData() {
   http.begin(url);
   if(http.GET() == HTTP_CODE_OK) {
     String payload = http.getString();
-    Serial.println("Historical data received");
-    
     DynamicJsonDocument doc(4096);
     deserializeJson(doc, payload);
     
@@ -184,9 +164,6 @@ void loadHistoricalData() {
     for(int i=0; i<24; i++) {
       priceHistory[i] = prices[i*4][1];
     }
-    Serial.println("Historical data processed");
-  } else {
-    Serial.println("Error fetching historical data!");
   }
   http.end();
 }
@@ -196,19 +173,15 @@ void drawPriceScreen() {
   uint16_t priceColor = priceChange24h >= 0 ? GREEN : RED;
   
   if(firstDraw) {
-    Serial.println("Drawing price screen");
     M5.Lcd.fillScreen(BLACK);
     M5.Lcd.setTextColor(WHITE);
     
-    // Header line
     M5.Lcd.setCursor(10, 10);
     M5.Lcd.printf("%s Price:", cryptoList[selectedCryptoIndex].abbr);
     
-    // 24h change label
     M5.Lcd.setCursor(150, 10);
     M5.Lcd.print("24h:");
     
-    // Values line
     M5.Lcd.setCursor(10, 40);
     M5.Lcd.setTextColor(priceColor);
     M5.Lcd.printf("$%.2f", currentPrice);
@@ -217,7 +190,6 @@ void drawPriceScreen() {
     M5.Lcd.setTextColor(priceColor);
     M5.Lcd.printf("%.2f%%", priceChange24h);
 
-    // Graph frame
     M5.Lcd.drawRect(GRAPH_X, GRAPH_Y, GRAPH_W, GRAPH_H, WHITE);
     
     firstDraw = false;
@@ -249,8 +221,6 @@ void drawPriceGraph() {
 
 void checkForMenuButton() {
   if(M5.BtnA.wasPressed() || M5.BtnB.wasPressed()) {
-    Serial.println("Returning to menu");
-    showLoadingScreen("Returning to Menu");
     dataLoaded = false;
     showMenu();
   }
