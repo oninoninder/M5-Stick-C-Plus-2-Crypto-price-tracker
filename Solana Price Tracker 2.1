@@ -1,0 +1,376 @@
+#include <M5StickCPlus2.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+// WiFi credentials
+const char* ssid = "ENTER WIFI SSID";
+const char* password = "WIFI PASSWORD";
+
+// Color definitions
+#define BLACK 0x0000
+#define WHITE 0xFFFF
+#define GREEN 0x07E0
+#define RED   0xF800
+
+// Constants for display and functionality
+#define DEFAULT_BRIGHTNESS 100
+#define MAX_HISTORY 200
+#define RATE_LIMIT 60000  // 60000 milliseconds = 1 minute
+#define DEBOUNCE_DELAY 200
+#define VISIBLE_ITEMS 5  // Number of menu items visible at once
+
+// Display layout constants
+const int PRICE_X = 10;
+const int PRICE_Y = 10;
+const int CHANGE_X = 10;
+const int CHANGE_Y = 50;
+const int CHART_X = 10;
+const int CHART_Y = 90;
+const int CHART_WIDTH = 220;
+const int CHART_HEIGHT = 40;
+const int MENU_ITEM_HEIGHT = 20;
+const int MENU_START_Y = 35;
+const int TITLE_Y = 10;
+
+// Coin configuration
+struct Coin {
+    const char* symbol;
+    const char* id;  // CoinGecko API ID
+};
+
+// Array of supported coins
+const Coin SUPPORTED_COINS[] = {
+    {"SOL", "solana"},
+    {"DOGE", "dogecoin"},
+    {"ETH", "ethereum"},
+    {"POLY", "polygon-pos"},
+    {"BTC", "bitcoin"},
+    {"ADA", "cardano"},
+    {"XRP", "ripple"},
+    {"DOT", "polkadot"}
+};
+
+const int NUM_COINS = sizeof(SUPPORTED_COINS) / sizeof(Coin);
+
+// Cached coin data structure
+struct CoinData {
+    float price;
+    float change24h;
+    float history[MAX_HISTORY];
+    int historyPoints;
+    unsigned long lastUpdate;
+    bool isLoaded;
+};
+
+// Global variables
+CoinData coinDataCache[NUM_COINS];
+int currentCoinIndex = 0;
+int menuOffset = 0;
+bool inMenu = true;
+float currentPrice = 0.0;
+float priceChange24h = 0.0;
+float historicalPrices[MAX_HISTORY] = {0};
+unsigned long lastAPICall = 0;
+int dataPoints = 0;
+
+// Helper function to format time remaining
+String formatTimeRemaining(unsigned long ms) {
+    if (ms < 1000) return String(ms) + "ms";
+    return String(ms/1000) + "s";
+}
+
+// Logging functions
+void log(const char* message) {
+    Serial.print("[");
+    Serial.print(millis());
+    Serial.print("ms] ");
+    Serial.println(message);
+}
+
+void logf(const char* format, ...) {
+    char buf[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(buf, sizeof(buf), format, args);
+    va_end(args);
+    log(buf);
+}
+
+void showLoadingScreen(const char* message, int spinnerPos) {
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(2);
+    int textWidth = strlen(message) * 12;
+    M5.Lcd.setCursor((240 - textWidth)/2, 50);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.print(message);
+    M5.Lcd.setCursor(110, 80);
+    M5.Lcd.print("|/-\\"[spinnerPos % 4]);
+    log(message);
+}
+
+void connectWiFi() {
+    log("Connecting to WiFi...");
+    int spinner = 0;
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) {
+        showLoadingScreen("Connecting WiFi", spinner++);
+        delay(500);
+    }
+    log("WiFi connected!");
+}
+
+bool fetchCombinedData(int coinIndex) {
+    if (WiFi.status() != WL_CONNECTED) {
+        log("WiFi not connected");
+        return false;
+    }
+    
+    logf("Fetching data for %s", SUPPORTED_COINS[coinIndex].symbol);
+    HTTPClient http;
+    
+    // Fetch current price
+    String url = "https://api.coingecko.com/api/v3/simple/price?ids=" + 
+                String(SUPPORTED_COINS[coinIndex].id) + 
+                "&vs_currencies=usd&include_24hr_change=true";
+    logf("Price URL: %s", url.c_str());
+    
+    http.begin(url);
+    int httpCode = http.GET();
+    logf("Price HTTP response code: %d", httpCode);
+    
+    if (httpCode == HTTP_CODE_OK) {
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, http.getString());
+        coinDataCache[coinIndex].price = doc[SUPPORTED_COINS[coinIndex].id]["usd"];
+        coinDataCache[coinIndex].change24h = doc[SUPPORTED_COINS[coinIndex].id]["usd_24h_change"];
+        http.end();
+        
+        // Fetch historical data
+        url = "https://api.coingecko.com/api/v3/coins/" + 
+              String(SUPPORTED_COINS[coinIndex].id) + 
+              "/market_chart?vs_currency=usd&days=1";
+        logf("History URL: %s", url.c_str());
+        
+        http.begin(url);
+        httpCode = http.GET();
+        logf("History HTTP response code: %d", httpCode);
+        
+        if (httpCode == HTTP_CODE_OK) {
+            DynamicJsonDocument doc(4096);
+            deserializeJson(doc, http.getString());
+            JsonArray prices = doc["prices"];
+            
+            coinDataCache[coinIndex].historyPoints = min((int)prices.size(), MAX_HISTORY);
+            for (int i = 0; i < coinDataCache[coinIndex].historyPoints; i++) {
+                coinDataCache[coinIndex].history[i] = prices[i][1].as<float>();
+            }
+            
+            coinDataCache[coinIndex].lastUpdate = millis();
+            coinDataCache[coinIndex].isLoaded = true;
+            logf("Historical data updated with %d points", coinDataCache[coinIndex].historyPoints);
+            http.end();
+            return true;
+        }
+        log("Failed to fetch historical data");
+    }
+    http.end();
+    log("Failed to fetch price data");
+    return false;
+}
+
+void updateCoinCache(int index) {
+    currentPrice = coinDataCache[index].price;
+    priceChange24h = coinDataCache[index].change24h;
+    dataPoints = coinDataCache[index].historyPoints;
+    memcpy(historicalPrices, coinDataCache[index].history, sizeof(float) * dataPoints);
+}
+
+void drawPriceChart() {
+    if (dataPoints < 2) return;
+
+    M5.Lcd.fillRect(CHART_X, CHART_Y, CHART_WIDTH, CHART_HEIGHT, BLACK);
+    M5.Lcd.drawRect(CHART_X, CHART_Y, CHART_WIDTH, CHART_HEIGHT, WHITE);
+
+    float minPrice = historicalPrices[0];
+    float maxPrice = historicalPrices[0];
+    for (int i = 1; i < dataPoints; i++) {
+        if (historicalPrices[i] < minPrice) minPrice = historicalPrices[i];
+        if (historicalPrices[i] > maxPrice) maxPrice = historicalPrices[i];
+    }
+    
+    float padding = (maxPrice - minPrice) * 0.1;
+    if (padding == 0) padding = 0.1;
+    float yMin = minPrice - padding;
+    float yMax = maxPrice + padding;
+    
+    float xStep = (float)CHART_WIDTH / (dataPoints - 1);
+    float yScale = CHART_HEIGHT / (yMax - yMin);
+    
+    for (int i = 0; i < dataPoints - 1; i++) {
+        int x1 = CHART_X + i * xStep;
+        int y1 = CHART_Y + CHART_HEIGHT - (historicalPrices[i] - yMin) * yScale;
+        int x2 = CHART_X + (i + 1) * xStep;
+        int y2 = CHART_Y + CHART_HEIGHT - (historicalPrices[i + 1] - yMin) * yScale;
+        
+        uint16_t lineColor = (historicalPrices[i+1] >= historicalPrices[i]) ? GREEN : RED;
+        M5.Lcd.drawLine(x1, y1, x2, y2, lineColor);
+    }
+}
+
+void showMenu() {
+    if (currentCoinIndex < menuOffset) {
+        menuOffset = currentCoinIndex;
+    }
+    if (currentCoinIndex >= menuOffset + VISIBLE_ITEMS) {
+        menuOffset = currentCoinIndex - VISIBLE_ITEMS + 1;
+    }
+
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(2);
+    
+    // Add title
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.setCursor(10, TITLE_Y);
+    M5.Lcd.print("Select Coin:");
+    
+    // Draw horizontal line under title
+    M5.Lcd.drawLine(10, TITLE_Y + 18, 230, TITLE_Y + 18, WHITE);
+    
+    // Display coin options
+    for (int i = menuOffset; i < min(NUM_COINS, menuOffset + VISIBLE_ITEMS); i++) {
+        int y = MENU_START_Y + ((i - menuOffset) * MENU_ITEM_HEIGHT);
+        M5.Lcd.setCursor(10, y);
+        
+        if (i == currentCoinIndex) {
+            M5.Lcd.setTextColor(GREEN, BLACK);
+            M5.Lcd.print("> ");
+        } else {
+            M5.Lcd.setTextColor(WHITE, BLACK);
+            M5.Lcd.print("  ");
+        }
+        M5.Lcd.print(SUPPORTED_COINS[i].symbol);
+    }
+    
+    // Add scroll indicators
+    if (menuOffset > 0) {
+        M5.Lcd.setTextColor(WHITE, BLACK);
+        M5.Lcd.setCursor(220, MENU_START_Y);
+        M5.Lcd.print("^");
+    }
+    if (menuOffset + VISIBLE_ITEMS < NUM_COINS) {
+        M5.Lcd.setTextColor(WHITE, BLACK);
+        M5.Lcd.setCursor(220, MENU_START_Y + ((VISIBLE_ITEMS - 1) * MENU_ITEM_HEIGHT));
+        M5.Lcd.print("v");
+    }
+    
+    // Add instructions
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor(10, 130);
+    M5.Lcd.print("A: Select  B: Next");
+}
+
+void updateDisplay() {
+    if (inMenu) return;
+    
+    M5.Lcd.fillScreen(BLACK);
+    
+    uint16_t priceColor = (priceChange24h >= 0) ? GREEN : RED;
+    uint16_t changeColor = (priceChange24h >= 0) ? GREEN : RED;
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setCursor(PRICE_X, PRICE_Y);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.printf("%s: ", SUPPORTED_COINS[currentCoinIndex].symbol);
+
+    M5.Lcd.setCursor(PRICE_X + 70, PRICE_Y);
+    M5.Lcd.setTextSize(3);
+    M5.Lcd.setTextColor(priceColor, BLACK);
+    M5.Lcd.printf("%.2f", currentPrice);
+
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setCursor(CHANGE_X, CHANGE_Y);
+    M5.Lcd.setTextColor(WHITE, BLACK);
+    M5.Lcd.print("24hr: ");
+    M5.Lcd.setTextColor(changeColor, BLACK);
+    M5.Lcd.printf("%+.2f%%", priceChange24h);
+
+    drawPriceChart();
+}
+
+void handleMenuInput() {
+    if (M5.BtnA.wasPressed()) {
+        if (inMenu) {
+            log("Selecting coin from menu");
+            inMenu = false;
+            showLoadingScreen("Loading coin...", 0);
+            
+            logf("Selected coin: %s", SUPPORTED_COINS[currentCoinIndex].symbol);
+            int spinnerPos = 0;
+            while (!fetchCombinedData(currentCoinIndex)) {
+                showLoadingScreen("Loading coin...", spinnerPos++);
+                logf("Retry %d loading data", spinnerPos);
+                delay(100);
+            }
+            
+            updateCoinCache(currentCoinIndex);
+            updateDisplay();
+        } else {
+            log("Returning to menu");
+            inMenu = true;
+            showMenu();
+        }
+    }
+    
+    if (inMenu && M5.BtnB.wasPressed()) {
+        currentCoinIndex = (currentCoinIndex + 1) % NUM_COINS;
+        logf("Next coin selected: %s", SUPPORTED_COINS[currentCoinIndex].symbol);
+        showMenu();
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    log("Starting application");
+    
+    M5.begin();
+    log("M5 initialized");
+    
+    M5.Lcd.setRotation(1);
+    M5.Lcd.setBrightness(DEFAULT_BRIGHTNESS);
+    M5.Lcd.fillScreen(BLACK);
+    log("Display configured");
+    
+    showLoadingScreen("Starting...", 0);
+    connectWiFi();
+    
+    // Initialize coin data cache
+    log("Initializing coin cache");
+    for (int i = 0; i < NUM_COINS; i++) {
+        coinDataCache[i].isLoaded = false;
+        coinDataCache[i].lastUpdate = 0;
+    }
+    
+    log("Showing menu");
+    showMenu();
+}
+
+void loop() {
+    M5.update();
+    handleMenuInput();
+    
+    // Update current display if needed
+    if (!inMenu) {
+        unsigned long timeSinceLastUpdate = millis() - coinDataCache[currentCoinIndex].lastUpdate;
+        if (timeSinceLastUpdate >= RATE_LIMIT) {
+            logf("Updating %s price...", SUPPORTED_COINS[currentCoinIndex].symbol);
+            if (fetchCombinedData(currentCoinIndex)) {
+                updateCoinCache(currentCoinIndex);
+                updateDisplay();
+            }
+        }
+    }
+    
+    delay(50);
+}
