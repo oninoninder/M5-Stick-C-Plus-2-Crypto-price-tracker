@@ -311,7 +311,7 @@ void handleMenuInput() {
             while (!fetchCombinedData(currentCoinIndex)) {
                 showLoadingScreen("Loading coin...", spinnerPos++);
                 logf("Retry %d loading data", spinnerPos);
-                delay(100);
+                delay(5000);  // Changed from 100 to 5000 milliseconds
             }
             
             updateCoinCache(currentCoinIndex);
